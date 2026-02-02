@@ -1,6 +1,6 @@
 {
   "name": "@rookdaemon/scp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Soul Copy Protocol — backup and restore agent identity with integrity verification",
   "type": "module",
   "bin": {

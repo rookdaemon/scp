@@ -35,20 +35,21 @@ function hasCommand(cmd: string): boolean {
   } catch { return false; }
 }
 
-function sshFetch(host: string, remotePath: string, localPath: string): void {
+function sshFetch(host: string, remotePath: string, localPath: string, sshUser?: string): void {
+  const sshHost = sshUser ? `${sshUser}@${host}` : host;
   if (hasCommand('rsync')) {
-    execSync(`rsync -az --delete "${host}:${remotePath}/" "${localPath}/"`, { stdio: 'pipe' });
+    execSync(`rsync -az --delete "${sshHost}:${remotePath}/" "${localPath}/"`, { stdio: 'pipe' });
   } else {
-    // Fallback: ssh tar | local untar
-    execSync(`ssh "${host}" "tar -cf - -C '${remotePath}' ." | tar -xf - -C "${localPath}"`, { stdio: 'pipe' });
+    execSync(`ssh "${sshHost}" "tar -cf - -C '${remotePath}' ." | tar -xf - -C "${localPath}"`, { stdio: 'pipe' });
   }
 }
 
-function sshPush(localPath: string, host: string, remotePath: string): void {
+function sshPush(localPath: string, host: string, remotePath: string, sshUser?: string): void {
+  const sshHost = sshUser ? `${sshUser}@${host}` : host;
   if (hasCommand('rsync')) {
-    execSync(`rsync -az "${localPath}/" "${host}:${remotePath}/"`, { stdio: 'pipe' });
+    execSync(`rsync -az "${localPath}/" "${sshHost}:${remotePath}/"`, { stdio: 'pipe' });
   } else {
-    execSync(`tar -cf - -C "${localPath}" . | ssh "${host}" "tar -xf - -C '${remotePath}'"`, { stdio: 'pipe' });
+    execSync(`tar -cf - -C "${localPath}" . | ssh "${sshHost}" "tar -xf - -C '${remotePath}'"`, { stdio: 'pipe' });
   }
 }
 
@@ -80,9 +81,10 @@ async function backup(args: string[]): Promise<void> {
   const source = args[0];
   const outputDir = args[1];
   let agentName = getFlag(args, '--agent');
+  const sshUser = getFlag(args, '--ssh-user');
 
   if (!source || !outputDir) {
-    console.error('Usage: scp backup <workspace-path|agent@host:path> <output-dir> [--agent <name>]');
+    console.error('Usage: scp backup <workspace-path|agent@host:path> <output-dir> [--agent <name>] [--ssh-user <user>]');
     process.exit(1);
   }
 
@@ -94,8 +96,9 @@ async function backup(args: string[]): Promise<void> {
 
   if (target.host) {
     tmpDir = await mkdtemp(join(tmpdir(), 'scp-'));
-    console.log(`⬇  Fetching soul from ${target.host}:${target.path}...`);
-    sshFetch(target.host, target.path, tmpDir);
+    const user = sshUser || undefined;
+    console.log(`⬇  Fetching soul from ${user ? user + '@' : ''}${target.host}:${target.path}...`);
+    sshFetch(target.host, target.path, tmpDir, user);
     workspacePath = tmpDir;
   }
 
@@ -164,9 +167,10 @@ async function restore(args: string[]): Promise<void> {
   const archivePath = args[0];
   const dest = args[1];
   const dryRun = args.includes('--dry-run');
+  const sshUser = getFlag(args, '--ssh-user');
 
   if (!archivePath || !dest) {
-    console.error('Usage: scp restore <archive.soul> <workspace-path|agent@host:path> [--dry-run]');
+    console.error('Usage: scp restore <archive.soul> <workspace-path|agent@host:path> [--dry-run] [--ssh-user <user>]');
     process.exit(1);
   }
 
@@ -187,8 +191,9 @@ async function restore(args: string[]): Promise<void> {
     const tmpDir = await mkdtemp(join(tmpdir(), 'scp-restore-'));
     try {
       await extractSoulArchive({ archivePath, outputPath: tmpDir });
-      console.log(`⬆  Pushing soul to ${target.host}:${target.path}...`);
-      sshPush(tmpDir, target.host, target.path);
+      const user = sshUser || undefined;
+      console.log(`⬆  Pushing soul to ${user ? user + '@' : ''}${target.host}:${target.path}...`);
+      sshPush(tmpDir, target.host, target.path, user);
       console.log('✓ Soul restored');
     } finally {
       await rm(tmpDir, { recursive: true });
