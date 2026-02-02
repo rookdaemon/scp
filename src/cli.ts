@@ -35,21 +35,40 @@ function hasCommand(cmd: string): boolean {
   } catch { return false; }
 }
 
-function sshFetch(host: string, remotePath: string, localPath: string, sshUser?: string): void {
-  const sshHost = sshUser ? `${sshUser}@${host}` : host;
+interface SSHOpts {
+  user?: string;
+  identityFile?: string;
+}
+
+function sshArgs(opts: SSHOpts): string {
+  const parts: string[] = [];
+  if (opts.identityFile) parts.push(`-i "${opts.identityFile}"`);
+  return parts.join(' ');
+}
+
+function sshHost(host: string, opts: SSHOpts): string {
+  return opts.user ? `${opts.user}@${host}` : host;
+}
+
+function sshFetch(host: string, remotePath: string, localPath: string, opts: SSHOpts = {}): void {
+  const target = sshHost(host, opts);
+  const sshFlag = sshArgs(opts);
   if (hasCommand('rsync')) {
-    execSync(`rsync -az --delete "${sshHost}:${remotePath}/" "${localPath}/"`, { stdio: 'pipe' });
+    const rshOpt = sshFlag ? `-e "ssh ${sshFlag}"` : '';
+    execSync(`rsync -az --delete ${rshOpt} "${target}:${remotePath}/" "${localPath}/"`, { stdio: 'pipe' });
   } else {
-    execSync(`ssh "${sshHost}" "tar -cf - -C '${remotePath}' ." | tar -xf - -C "${localPath}"`, { stdio: 'pipe' });
+    execSync(`ssh ${sshFlag} "${target}" "tar -cf - -C '${remotePath}' ." | tar -xf - -C "${localPath}"`, { stdio: 'pipe' });
   }
 }
 
-function sshPush(localPath: string, host: string, remotePath: string, sshUser?: string): void {
-  const sshHost = sshUser ? `${sshUser}@${host}` : host;
+function sshPush(localPath: string, host: string, remotePath: string, opts: SSHOpts = {}): void {
+  const target = sshHost(host, opts);
+  const sshFlag = sshArgs(opts);
   if (hasCommand('rsync')) {
-    execSync(`rsync -az "${localPath}/" "${sshHost}:${remotePath}/"`, { stdio: 'pipe' });
+    const rshOpt = sshFlag ? `-e "ssh ${sshFlag}"` : '';
+    execSync(`rsync -az ${rshOpt} "${localPath}/" "${target}:${remotePath}/"`, { stdio: 'pipe' });
   } else {
-    execSync(`tar -cf - -C "${localPath}" . | ssh "${sshHost}" "tar -xf - -C '${remotePath}'"`, { stdio: 'pipe' });
+    execSync(`tar -cf - -C "${localPath}" . | ssh ${sshFlag} "${target}" "tar -xf - -C '${remotePath}'"`, { stdio: 'pipe' });
   }
 }
 
@@ -82,9 +101,10 @@ async function backup(args: string[]): Promise<void> {
   const outputDir = args[1];
   let agentName = getFlag(args, '--agent');
   const sshUser = getFlag(args, '--ssh-user');
+  const identityFile = getFlag(args, '-i');
 
   if (!source || !outputDir) {
-    console.error('Usage: scp backup <workspace-path|agent@host:path> <output-dir> [--agent <name>] [--ssh-user <user>]');
+    console.error('Usage: scp backup <workspace-path|agent@host:path> <output-dir> [--agent <name>] [--ssh-user <user>] [-i <key>]');
     process.exit(1);
   }
 
@@ -96,9 +116,9 @@ async function backup(args: string[]): Promise<void> {
 
   if (target.host) {
     tmpDir = await mkdtemp(join(tmpdir(), 'scp-'));
-    const user = sshUser || undefined;
-    console.log(`⬇  Fetching soul from ${user ? user + '@' : ''}${target.host}:${target.path}...`);
-    sshFetch(target.host, target.path, tmpDir, user);
+    const ssh: SSHOpts = { user: sshUser, identityFile };
+    console.log(`⬇  Fetching soul from ${sshHost(target.host, ssh)}:${target.path}...`);
+    sshFetch(target.host, target.path, tmpDir, ssh);
     workspacePath = tmpDir;
   }
 
@@ -168,9 +188,10 @@ async function restore(args: string[]): Promise<void> {
   const dest = args[1];
   const dryRun = args.includes('--dry-run');
   const sshUser = getFlag(args, '--ssh-user');
+  const identityFile = getFlag(args, '-i');
 
   if (!archivePath || !dest) {
-    console.error('Usage: scp restore <archive.soul> <workspace-path|agent@host:path> [--dry-run] [--ssh-user <user>]');
+    console.error('Usage: scp restore <archive.soul> <workspace-path|agent@host:path> [--dry-run] [--ssh-user <user>] [-i <key>]');
     process.exit(1);
   }
 
@@ -191,9 +212,9 @@ async function restore(args: string[]): Promise<void> {
     const tmpDir = await mkdtemp(join(tmpdir(), 'scp-restore-'));
     try {
       await extractSoulArchive({ archivePath, outputPath: tmpDir });
-      const user = sshUser || undefined;
-      console.log(`⬆  Pushing soul to ${user ? user + '@' : ''}${target.host}:${target.path}...`);
-      sshPush(tmpDir, target.host, target.path, user);
+      const ssh: SSHOpts = { user: sshUser, identityFile };
+      console.log(`⬆  Pushing soul to ${sshHost(target.host, ssh)}:${target.path}...`);
+      sshPush(tmpDir, target.host, target.path, ssh);
       console.log('✓ Soul restored');
     } finally {
       await rm(tmpDir, { recursive: true });
