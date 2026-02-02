@@ -22,6 +22,7 @@
 import { createSoulArchive, extractSoulArchive } from './archive.js';
 import { createSTPServer } from './server.js';
 import { STPClient } from './client.js';
+import { CORE_FILES, SOUL_DIRS } from './soul-files.js';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { execSync } from 'node:child_process';
@@ -53,11 +54,23 @@ function sshHost(host: string, opts: SSHOpts): string {
 function sshFetch(host: string, remotePath: string, localPath: string, opts: SSHOpts = {}): void {
   const target = sshHost(host, opts);
   const sshFlag = sshArgs(opts);
+
+  // Only fetch soul files, not the entire workspace
+  const includes: string[] = [];
+  for (const f of CORE_FILES) includes.push(`--include="${f}"`);
+  for (const d of SOUL_DIRS) {
+    includes.push(`--include="${d}/"`);
+    includes.push(`--include="${d}/**"`);
+  }
+  includes.push('--exclude="*"');
+
   if (hasCommand('rsync')) {
     const rshOpt = sshFlag ? `-e "ssh ${sshFlag}"` : '';
-    execSync(`rsync -az --delete ${rshOpt} "${target}:${remotePath}/" "${localPath}/"`, { stdio: 'pipe' });
+    execSync(`rsync -az --progress ${rshOpt} ${includes.join(' ')} "${target}:${remotePath}/" "${localPath}/"`, { stdio: 'inherit' });
   } else {
-    execSync(`ssh ${sshFlag} "${target}" "tar -cf - -C '${remotePath}' ." | tar -xf - -C "${localPath}"`, { stdio: 'pipe' });
+    // Build a file list for tar on the remote side
+    const tarIncludes = [...CORE_FILES, ...SOUL_DIRS.map(d => d + '/')].join(' ');
+    execSync(`ssh ${sshFlag} "${target}" "cd '${remotePath}' && tar -cf - ${tarIncludes} 2>/dev/null" | tar -xf - -C "${localPath}"`, { stdio: 'inherit' });
   }
 }
 
