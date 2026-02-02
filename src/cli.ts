@@ -25,8 +25,32 @@ import { STPClient } from './client.js';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { execSync } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+
+function hasCommand(cmd: string): boolean {
+  try {
+    execSync(process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`, { stdio: 'pipe' });
+    return true;
+  } catch { return false; }
+}
+
+function sshFetch(host: string, remotePath: string, localPath: string): void {
+  if (hasCommand('rsync')) {
+    execSync(`rsync -az --delete "${host}:${remotePath}/" "${localPath}/"`, { stdio: 'pipe' });
+  } else {
+    // Fallback: ssh tar | local untar
+    execSync(`ssh "${host}" "tar -cf - -C '${remotePath}' ." | tar -xf - -C "${localPath}"`, { stdio: 'pipe' });
+  }
+}
+
+function sshPush(localPath: string, host: string, remotePath: string): void {
+  if (hasCommand('rsync')) {
+    execSync(`rsync -az "${localPath}/" "${host}:${remotePath}/"`, { stdio: 'pipe' });
+  } else {
+    execSync(`tar -cf - -C "${localPath}" . | ssh "${host}" "tar -xf - -C '${remotePath}'"`, { stdio: 'pipe' });
+  }
+}
 
 interface ParsedTarget {
   agent: string;
@@ -71,7 +95,7 @@ async function backup(args: string[]): Promise<void> {
   if (target.host) {
     tmpDir = await mkdtemp(join(tmpdir(), 'scp-'));
     console.log(`⬇  Fetching soul from ${target.host}:${target.path}...`);
-    execSync(`rsync -az --delete "${target.host}:${target.path}/" "${tmpDir}/"`, { stdio: 'pipe' });
+    sshFetch(target.host, target.path, tmpDir);
     workspacePath = tmpDir;
   }
 
@@ -164,7 +188,7 @@ async function restore(args: string[]): Promise<void> {
     try {
       await extractSoulArchive({ archivePath, outputPath: tmpDir });
       console.log(`⬆  Pushing soul to ${target.host}:${target.path}...`);
-      execSync(`rsync -az "${tmpDir}/" "${target.host}:${target.path}/"`, { stdio: 'pipe' });
+      sshPush(tmpDir, target.host, target.path);
       console.log('✓ Soul restored');
     } finally {
       await rm(tmpDir, { recursive: true });
