@@ -63,6 +63,37 @@ A `.soul` file is a gzipped tar archive containing:
 
 The manifest includes a top-level checksum (SHA-256 of all file checksums) for whole-archive integrity verification.
 
+## Soul Transfer Protocol (STP)
+
+SCP includes its own network protocol so souls can transfer between any two environments that speak it. No SSH required.
+
+```bash
+# Run a server on the agent's host
+scp serve /path/to/workspace --agent rook --token mysecret --port 9473
+
+# Pull a soul from anywhere
+scp pull http://agent-host:9473 ./backups/ --token mysecret
+
+# Push a soul to a remote agent
+scp push ./backups/rook-2026-02-02.soul http://agent-host:9473 --token mysecret
+
+# Check if an agent is alive
+scp ping http://agent-host:9473
+```
+
+### Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/health` | No | Agent name + protocol version |
+| GET | `/soul/manifest` | Yes | Current file inventory + checksums |
+| GET | `/soul` | Yes | Download .soul archive |
+| PUT | `/soul` | Yes | Upload .soul archive (restore) |
+
+The receiving agent can reject incoming transfers via a callback — consent is part of the protocol.
+
+Port 9473 = SOUL on a phone keypad.
+
 ## Zero dependencies
 
 Built on Node.js builtins only. The tar implementation is 80 lines. The whole thing fits in a context window.
