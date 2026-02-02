@@ -2,24 +2,31 @@
 /**
  * SCP — Soul Copy Protocol
  *
- * Usage:
+ * Local operations:
  *   scp backup <workspace-path> <output-dir> [--agent <name>]
  *   scp verify <archive.soul>
- *   scp restore <archive.soul> <workspace-path> [--dry-run]
  *   scp inspect <archive.soul>
+ *   scp restore <archive.soul> <workspace-path> [--dry-run]
  *
- * Remote (via ssh):
- *   scp backup <agent>@<host>:<workspace-path> <output-dir>
- *   scp restore <archive.soul> <agent>@<host>:<workspace-path>
+ * Soul Transfer Protocol (network):
+ *   scp serve <workspace-path> --agent <name> --token <secret> [--port 9473]
+ *   scp pull <url> <output-dir> --token <secret>
+ *   scp push <archive.soul> <url> --token <secret>
+ *   scp ping <url>
+ *
+ * Remote via SSH (legacy):
+ *   scp backup <agent>@<host>:<path> <output-dir>
+ *   scp restore <archive.soul> <agent>@<host>:<path>
  */
 
 import { createSoulArchive, extractSoulArchive } from './archive.js';
+import { createSTPServer } from './server.js';
+import { STPClient } from './client.js';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { execSync } from 'node:child_process';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import type { SoulManifest } from './manifest.js';
 
 interface ParsedTarget {
   agent: string;
@@ -28,11 +35,8 @@ interface ParsedTarget {
 }
 
 function parseTarget(target: string): ParsedTarget {
-  // agent@host:/path or /local/path
   const match = target.match(/^([^@]+)@([^:]+):(.+)$/);
-  if (match) {
-    return { agent: match[1], host: match[2], path: match[3] };
-  }
+  if (match) return { agent: match[1], host: match[2], path: match[3] };
   return { agent: '', host: null, path: target };
 }
 
@@ -41,19 +45,17 @@ function archiveName(agent: string): string {
   return `${agent}-${date}.soul`;
 }
 
-async function rsyncFrom(host: string, remotePath: string, localPath: string): Promise<void> {
-  execSync(`rsync -az --delete "${host}:${remotePath}/" "${localPath}/"`, { stdio: 'pipe' });
+function getFlag(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  return idx >= 0 ? args[idx + 1] : undefined;
 }
 
-async function rsyncTo(localPath: string, host: string, remotePath: string): Promise<void> {
-  execSync(`rsync -az "${localPath}/" "${host}:${remotePath}/"`, { stdio: 'pipe' });
-}
+// ── Local commands ──────────────────────────────────────────
 
 async function backup(args: string[]): Promise<void> {
   const source = args[0];
   const outputDir = args[1];
-  const agentFlag = args.indexOf('--agent');
-  let agentName = agentFlag >= 0 ? args[agentFlag + 1] : '';
+  let agentName = getFlag(args, '--agent');
 
   if (!source || !outputDir) {
     console.error('Usage: scp backup <workspace-path|agent@host:path> <output-dir> [--agent <name>]');
@@ -66,11 +68,10 @@ async function backup(args: string[]): Promise<void> {
   let workspacePath = target.path;
   let tmpDir: string | null = null;
 
-  // Remote: rsync to temp dir first
   if (target.host) {
     tmpDir = await mkdtemp(join(tmpdir(), 'scp-'));
     console.log(`⬇  Fetching soul from ${target.host}:${target.path}...`);
-    await rsyncFrom(target.host, target.path, tmpDir);
+    execSync(`rsync -az --delete "${target.host}:${target.path}/" "${tmpDir}/"`, { stdio: 'pipe' });
     workspacePath = tmpDir;
   }
 
@@ -104,12 +105,7 @@ async function verify(args: string[]): Promise<void> {
 
   console.log(`🔍 Verifying ${archivePath}...`);
   try {
-    const manifest = await extractSoulArchive({
-      archivePath,
-      outputPath: '', // not used in dry run
-      dryRun: true,
-    });
-
+    const manifest = await extractSoulArchive({ archivePath, outputPath: '', dryRun: true });
     console.log(`✓ Soul integrity verified`);
     console.log(`  Agent: ${manifest.agent}`);
     console.log(`  Source: ${manifest.source}`);
@@ -129,12 +125,7 @@ async function inspect(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const manifest = await extractSoulArchive({
-    archivePath,
-    outputPath: '',
-    dryRun: true,
-  });
-
+  const manifest = await extractSoulArchive({ archivePath, outputPath: '', dryRun: true });
   console.log(`Soul: ${manifest.agent} @ ${manifest.source}`);
   console.log(`Time: ${manifest.timestamp}`);
   console.log(`Checksum: ${manifest.checksum}`);
@@ -156,16 +147,9 @@ async function restore(args: string[]): Promise<void> {
   }
 
   const target = parseTarget(dest);
-
   console.log(`${dryRun ? '🔍 Dry run: ' : ''}Restoring soul to ${dest}...`);
 
-  // Verify first
-  const manifest = await extractSoulArchive({
-    archivePath,
-    outputPath: '',
-    dryRun: true,
-  });
-
+  const manifest = await extractSoulArchive({ archivePath, outputPath: '', dryRun: true });
   console.log(`  Soul: ${manifest.agent} (${manifest.files.length} files)`);
   console.log(`  From: ${manifest.source} at ${manifest.timestamp}`);
   console.log(`  Checksum: ${manifest.checksum.slice(0, 16)}...`);
@@ -176,12 +160,11 @@ async function restore(args: string[]): Promise<void> {
   }
 
   if (target.host) {
-    // Remote restore: extract to tmp, rsync to remote
     const tmpDir = await mkdtemp(join(tmpdir(), 'scp-restore-'));
     try {
       await extractSoulArchive({ archivePath, outputPath: tmpDir });
       console.log(`⬆  Pushing soul to ${target.host}:${target.path}...`);
-      await rsyncTo(tmpDir, target.host, target.path);
+      execSync(`rsync -az "${tmpDir}/" "${target.host}:${target.path}/"`, { stdio: 'pipe' });
       console.log('✓ Soul restored');
     } finally {
       await rm(tmpDir, { recursive: true });
@@ -192,28 +175,113 @@ async function restore(args: string[]): Promise<void> {
   }
 }
 
-// Main
+// ── STP network commands ────────────────────────────────────
+
+async function serve(args: string[]): Promise<void> {
+  const workspacePath = args[0];
+  const agent = getFlag(args, '--agent');
+  const token = getFlag(args, '--token');
+  const port = parseInt(getFlag(args, '--port') || '9473', 10);
+
+  if (!workspacePath || !agent || !token) {
+    console.error('Usage: scp serve <workspace-path> --agent <name> --token <secret> [--port 9473]');
+    process.exit(1);
+  }
+
+  const server = createSTPServer({
+    port,
+    workspacePath,
+    agent,
+    token,
+  });
+
+  await server.listen();
+}
+
+async function pull(args: string[]): Promise<void> {
+  const url = args[0];
+  const outputDir = args[1];
+  const token = getFlag(args, '--token');
+
+  if (!url || !outputDir || !token) {
+    console.error('Usage: scp pull <url> <output-dir> --token <secret>');
+    process.exit(1);
+  }
+
+  const client = new STPClient({ baseUrl: url, token });
+  const health = await client.health();
+  console.log(`⬇  Pulling soul from ${health.agent}...`);
+
+  const outputPath = join(outputDir, archiveName(health.agent));
+  const manifest = await client.pull(outputPath);
+
+  console.log(`✓ Soul downloaded: ${outputPath}`);
+  console.log(`  Agent: ${manifest.agent}`);
+  console.log(`  Files: ${manifest.files.length}`);
+  console.log(`  Checksum: ${manifest.checksum.slice(0, 16)}...`);
+}
+
+async function push(args: string[]): Promise<void> {
+  const archivePath = args[0];
+  const url = args[1];
+  const token = getFlag(args, '--token');
+
+  if (!archivePath || !url || !token) {
+    console.error('Usage: scp push <archive.soul> <url> --token <secret>');
+    process.exit(1);
+  }
+
+  const client = new STPClient({ baseUrl: url, token });
+  console.log(`⬆  Pushing soul to ${url}...`);
+
+  const result = await client.push(archivePath);
+  console.log(`✓ ${result.message}`);
+  console.log(`  Files: ${result.manifest.files}`);
+  console.log(`  Checksum: ${result.manifest.checksum.slice(0, 16)}...`);
+}
+
+async function ping(args: string[]): Promise<void> {
+  const url = args[0];
+  if (!url) {
+    console.error('Usage: scp ping <url>');
+    process.exit(1);
+  }
+
+  try {
+    const res = await fetch(`${url}/health`);
+    const data = await res.json() as any;
+    console.log(`✓ ${data.agent} is alive (${data.protocol})`);
+  } catch (err: any) {
+    console.error(`✗ No response from ${url}: ${err.message}`);
+    process.exit(1);
+  }
+}
+
+// ── Main ────────────────────────────────────────────────────
+
 const [command, ...args] = process.argv.slice(2);
 
 const commands: Record<string, (args: string[]) => Promise<void>> = {
-  backup,
-  verify,
-  inspect,
-  restore,
+  backup, verify, inspect, restore,
+  serve, pull, push, ping,
 };
 
 if (!command || !commands[command]) {
   console.log(`SCP — Soul Copy Protocol ♜
 
-Usage:
+Local:
   scp backup <workspace|agent@host:path> <output-dir> [--agent <name>]
   scp verify <archive.soul>
   scp inspect <archive.soul>
   scp restore <archive.soul> <workspace|agent@host:path> [--dry-run]
 
-The .soul archive is a compressed, checksummed snapshot of an agent's
-identity files: SOUL.md, MEMORY.md, memory/*, and everything that makes
-the agent who they are.`);
+Soul Transfer Protocol:
+  scp serve <workspace> --agent <name> --token <secret> [--port 9473]
+  scp pull <url> <output-dir> --token <secret>
+  scp push <archive.soul> <url> --token <secret>
+  scp ping <url>
+
+Port 9473 = "SOUL" on a phone keypad.`);
   process.exit(command ? 1 : 0);
 }
 
