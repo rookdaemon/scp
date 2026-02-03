@@ -79,4 +79,39 @@ describe('archive', () => {
       /No soul files found/
     );
   });
+
+  it('should use SOUL_MANIFEST.json when present', async () => {
+    const manifestWorkspace = join(tmp, 'manifest-workspace');
+    await mkdir(join(manifestWorkspace, 'custom'), { recursive: true });
+    await mkdir(join(manifestWorkspace, 'logs'), { recursive: true });
+
+    // Create custom files
+    await writeFile(join(manifestWorkspace, 'SOUL.md'), '# Custom agent');
+    await writeFile(join(manifestWorkspace, 'custom', 'file.txt'), 'Custom content');
+    await writeFile(join(manifestWorkspace, 'logs', 'debug.log'), 'Log content');
+    
+    // Create a manifest that specifies what to include
+    const manifestConfig = {
+      version: '1.0',
+      include: ['SOUL.md', 'custom/', 'logs/'],
+    };
+    await writeFile(
+      join(manifestWorkspace, 'SOUL_MANIFEST.json'),
+      JSON.stringify(manifestConfig, null, 2)
+    );
+
+    // Create archive
+    const archivePath = join(output, 'manifest-test.soul');
+    const manifest = await createSoulArchive({
+      workspacePath: manifestWorkspace,
+      outputPath: archivePath,
+      agent: 'manifest-agent',
+      source: 'localhost',
+    });
+
+    // Should include files specified in manifest
+    assert.strictEqual(manifest.files.length, 3);
+    const paths = manifest.files.map(f => f.path).sort();
+    assert.deepStrictEqual(paths, ['SOUL.md', 'custom/file.txt', 'logs/debug.log']);
+  });
 });
