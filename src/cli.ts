@@ -22,11 +22,12 @@
 import { createSoulArchive, extractSoulArchive } from './archive.js';
 import { createSTPServer } from './server.js';
 import { STPClient } from './client.js';
-import { CORE_FILES, SOUL_DIRS } from './soul-files.js';
+import { CORE_FILES, SOUL_DIRS, type SoulManifestConfig } from './soul-files.js';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { execSync } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 function hasCommand(cmd: string): boolean {
@@ -55,22 +56,81 @@ function sshFetch(host: string, remotePath: string, localPath: string, opts: SSH
   const target = sshHost(host, opts);
   const sshFlag = sshArgs(opts);
 
-  // Only fetch soul files, not the entire workspace
-  const includes: string[] = [];
-  for (const f of CORE_FILES) includes.push(`--include="${f}"`);
-  for (const d of SOUL_DIRS) {
-    includes.push(`--include="${d}/"`);
-    includes.push(`--include="${d}/**"`);
+  // First, try to fetch SOUL_MANIFEST.json
+  let manifest: SoulManifestConfig | null = null;
+  const manifestTmpPath = join(localPath, 'SOUL_MANIFEST.json');
+  
+  try {
+    if (hasCommand('rsync')) {
+      const rshOpt = sshFlag ? `-e "ssh ${sshFlag}"` : '';
+      execSync(`rsync -az ${rshOpt} "${target}:${remotePath}/SOUL_MANIFEST.json" "${manifestTmpPath}"`, { stdio: 'pipe' });
+    } else {
+      execSync(`ssh ${sshFlag} "${target}" "cat '${remotePath}/SOUL_MANIFEST.json'" > "${manifestTmpPath}"`, { stdio: 'pipe', shell: '/bin/bash' });
+    }
+    
+    // Parse the manifest if it was fetched successfully
+    try {
+      const content = readFileSync(manifestTmpPath, 'utf-8');
+      manifest = JSON.parse(content) as SoulManifestConfig;
+    } catch {
+      manifest = null;
+    }
+  } catch {
+    // Manifest doesn't exist, will use defaults
+    manifest = null;
   }
-  includes.push('--exclude="*"');
 
+  // Determine what files/directories to include
+  let includes: string[] = [];
+  let tarIncludes: string[] = [];
+  
+  if (manifest?.include) {
+    // Use manifest include list
+    for (const entry of manifest.include) {
+      // Skip absolute paths - they cannot be fetched from remote workspace
+      if (entry.startsWith('/') || entry.startsWith('~/')) {
+        console.warn(`Warning: skipping absolute path from manifest: ${entry}`);
+        continue;
+      }
+      
+      // Check if entry looks like a directory (ends with / or doesn't have extension)
+      // We treat it as a directory pattern to ensure we get all files within
+      if (entry.endsWith('/')) {
+        // Explicit directory
+        includes.push(`--include="${entry}"`);
+        includes.push(`--include="${entry}**"`);
+        tarIncludes.push(entry);
+      } else {
+        // Could be a file or directory - add both patterns for rsync
+        includes.push(`--include="${entry}"`);
+        includes.push(`--include="${entry}/"`);
+        includes.push(`--include="${entry}/**"`);
+        tarIncludes.push(entry);
+      }
+    }
+    includes.push('--exclude="*"');
+  } else {
+    // Fall back to defaults (CORE_FILES + SOUL_DIRS)
+    for (const f of CORE_FILES) {
+      includes.push(`--include="${f}"`);
+      tarIncludes.push(f);
+    }
+    for (const d of SOUL_DIRS) {
+      includes.push(`--include="${d}/"`);
+      includes.push(`--include="${d}/**"`);
+      tarIncludes.push(d + '/');
+    }
+    includes.push('--exclude="*"');
+  }
+
+  // Fetch the files
   if (hasCommand('rsync')) {
     const rshOpt = sshFlag ? `-e "ssh ${sshFlag}"` : '';
     execSync(`rsync -az --progress ${rshOpt} ${includes.join(' ')} "${target}:${remotePath}/" "${localPath}/"`, { stdio: 'inherit' });
   } else {
     // Build a file list for tar on the remote side
-    const tarIncludes = [...CORE_FILES, ...SOUL_DIRS.map(d => d + '/')].join(' ');
-    execSync(`ssh ${sshFlag} "${target}" "cd '${remotePath}' && tar -cf - ${tarIncludes} 2>/dev/null" | tar -xf - -C "${localPath}"`, { stdio: 'inherit' });
+    const tarList = tarIncludes.join(' ');
+    execSync(`ssh ${sshFlag} "${target}" "cd '${remotePath}' && tar -cf - ${tarList} 2>/dev/null" | tar -xf - -C "${localPath}"`, { stdio: 'inherit' });
   }
 }
 
