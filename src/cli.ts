@@ -3,7 +3,7 @@
  * SCP — Soul Copy Protocol
  *
  * Local operations:
- *   scp backup <workspace-path> <output-dir> [--agent <name>]
+ *   scp backup <workspace-path> <output-dir> [--agent <name>] [--encrypt <recipient>]
  *   scp verify <archive.soul>
  *   scp inspect <archive.soul>
  *   scp restore <archive.soul> <workspace-path> [--dry-run]
@@ -115,9 +115,10 @@ async function backup(args: string[]): Promise<void> {
   let agentName = getFlag(args, '--agent');
   const sshUser = getFlag(args, '--ssh-user');
   const identityFile = getFlag(args, '-i');
+  const encryptTo = getFlag(args, '--encrypt');
 
   if (!source || !outputDir) {
-    console.error('Usage: scp backup <workspace-path|agent@host:path> <output-dir> [--agent <name>] [--ssh-user <user>] [-i <key>]');
+    console.error('Usage: scp backup <workspace-path|agent@host:path> <output-dir> [--agent <name>] [--ssh-user <user>] [-i <key>] [--encrypt <recipient>]');
     process.exit(1);
   }
 
@@ -146,11 +147,28 @@ async function backup(args: string[]): Promise<void> {
       source: target.host || hostname(),
     });
 
-    console.log(`✓ Soul archived: ${outputPath}`);
+    let finalPath = outputPath;
+
+    // Encrypt if requested
+    if (encryptTo) {
+      if (!hasCommand('gpg')) {
+        console.error('✗ GPG not found. Install gnupg to use --encrypt.');
+        process.exit(1);
+      }
+      const encryptedPath = outputPath + '.gpg';
+      console.log(`🔐 Encrypting to ${encryptTo}...`);
+      execSync(`gpg --yes --armor --recipient "${encryptTo}" --output "${encryptedPath}" --encrypt "${outputPath}"`, { stdio: 'pipe' });
+      // Remove unencrypted archive
+      await rm(outputPath);
+      finalPath = encryptedPath;
+    }
+
+    console.log(`✓ Soul archived: ${finalPath}`);
     console.log(`  Agent: ${manifest.agent}`);
     console.log(`  Files: ${manifest.files.length}`);
     console.log(`  Checksum: ${manifest.checksum.slice(0, 16)}...`);
     console.log(`  Timestamp: ${manifest.timestamp}`);
+    if (encryptTo) console.log(`  Encrypted to: ${encryptTo}`);
   } finally {
     if (tmpDir) await rm(tmpDir, { recursive: true });
   }

@@ -1,5 +1,23 @@
 # Future Work
 
+## Known Security Gaps (v0.1.x)
+
+These are acknowledged limitations in the current implementation. Documenting them explicitly rather than pretending they don't exist.
+
+### Revocation
+When an agent transfers to a new instance, the old instance retains any credentials it had. STP doesn't handle revocation — it's a copy protocol, not a handoff protocol. For now: treat transfers as "backup + manual credential rotation" rather than "migration with automatic handoff."
+
+### Key Bootstrap Problem
+Encrypting a backup "to the target instance's key" assumes the target has an identity key before receiving the transfer. But establishing that key is part of what transfer accomplishes. Chicken-and-egg. Current workaround: encrypt to the human's key, human decrypts and provisions to new instance.
+
+### Manifest Information Leakage
+Even without secrets, knowing what files an agent has reveals operational surface. Acceptable tradeoff for now — the manifest is still far less sensitive than the contents.
+
+### Secrets Not Transferred
+Credentials (API keys, tokens, cookies) are deliberately excluded. The backup shows *what* you need, not *what the values are*. Manual re-provisioning required after restore. This is a feature, not a bug — but it means transfers require human involvement.
+
+---
+
 ## 1. Soul as a standalone format, not filesystem coupling
 
 Right now a `.soul` archive is a bag of OpenClaw workspace files. That's an implementation detail masquerading as a protocol. The soul should be a self-describing, runtime-agnostic format grounded in theory of mind:

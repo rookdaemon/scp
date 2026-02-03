@@ -23,6 +23,7 @@ export const CORE_FILES = [
  */
 export const SOUL_DIRS = [
   'memory',
+  'skills',
 ] as const;
 
 /**
