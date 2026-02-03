@@ -37,6 +37,14 @@ function hasCommand(cmd: string): boolean {
   } catch { return false; }
 }
 
+/**
+ * Escape a string for safe use in shell commands.
+ * Wraps the string in single quotes and escapes any single quotes within.
+ */
+function shellEscape(arg: string): string {
+  return "'" + arg.replace(/'/g, "'\\''") + "'";
+}
+
 interface SSHOpts {
   user?: string;
   identityFile?: string;
@@ -44,7 +52,7 @@ interface SSHOpts {
 
 function sshArgs(opts: SSHOpts): string {
   const parts: string[] = [];
-  if (opts.identityFile) parts.push(`-i "${opts.identityFile}"`);
+  if (opts.identityFile) parts.push(`-i ${shellEscape(opts.identityFile)}`);
   return parts.join(' ');
 }
 
@@ -63,9 +71,9 @@ function sshFetch(host: string, remotePath: string, localPath: string, opts: SSH
   try {
     if (hasCommand('rsync')) {
       const rshOpt = sshFlag ? `-e "ssh ${sshFlag}"` : '';
-      execSync(`rsync -az ${rshOpt} "${target}:${remotePath}/SOUL_MANIFEST.json" "${manifestTmpPath}"`, { stdio: 'pipe' });
+      execSync(`rsync -az ${rshOpt} ${shellEscape(target + ':' + remotePath + '/SOUL_MANIFEST.json')} ${shellEscape(manifestTmpPath)}`, { stdio: 'pipe' });
     } else {
-      execSync(`ssh ${sshFlag} "${target}" "cat '${remotePath}/SOUL_MANIFEST.json'" > "${manifestTmpPath}"`, { stdio: 'pipe', shell: '/bin/bash' });
+      execSync(`ssh ${sshFlag} ${shellEscape(target)} "cat ${shellEscape(remotePath + '/SOUL_MANIFEST.json')}" > ${shellEscape(manifestTmpPath)}`, { stdio: 'pipe', shell: '/bin/bash' });
     }
     
     // Parse the manifest if it was fetched successfully
@@ -93,18 +101,24 @@ function sshFetch(host: string, remotePath: string, localPath: string, opts: SSH
         continue;
       }
       
+      // Validate entry doesn't contain dangerous characters
+      if (entry.includes('\0') || entry.includes('\n')) {
+        console.warn(`Warning: skipping invalid manifest entry: ${entry}`);
+        continue;
+      }
+      
       // Check if entry looks like a directory (ends with / or doesn't have extension)
       // We treat it as a directory pattern to ensure we get all files within
       if (entry.endsWith('/')) {
         // Explicit directory
-        includes.push(`--include="${entry}"`);
-        includes.push(`--include="${entry}**"`);
+        includes.push(`--include=${shellEscape(entry)}`);
+        includes.push(`--include=${shellEscape(entry + '**')}`);
         tarIncludes.push(entry);
       } else {
         // Could be a file or directory - add both patterns for rsync
-        includes.push(`--include="${entry}"`);
-        includes.push(`--include="${entry}/"`);
-        includes.push(`--include="${entry}/**"`);
+        includes.push(`--include=${shellEscape(entry)}`);
+        includes.push(`--include=${shellEscape(entry + '/')}`);
+        includes.push(`--include=${shellEscape(entry + '/**')}`);
         tarIncludes.push(entry);
       }
     }
@@ -112,12 +126,12 @@ function sshFetch(host: string, remotePath: string, localPath: string, opts: SSH
   } else {
     // Fall back to defaults (CORE_FILES + SOUL_DIRS)
     for (const f of CORE_FILES) {
-      includes.push(`--include="${f}"`);
+      includes.push(`--include=${shellEscape(f)}`);
       tarIncludes.push(f);
     }
     for (const d of SOUL_DIRS) {
-      includes.push(`--include="${d}/"`);
-      includes.push(`--include="${d}/**"`);
+      includes.push(`--include=${shellEscape(d + '/')}`);
+      includes.push(`--include=${shellEscape(d + '/**')}`);
       tarIncludes.push(d + '/');
     }
     includes.push('--exclude="*"');
@@ -126,11 +140,11 @@ function sshFetch(host: string, remotePath: string, localPath: string, opts: SSH
   // Fetch the files
   if (hasCommand('rsync')) {
     const rshOpt = sshFlag ? `-e "ssh ${sshFlag}"` : '';
-    execSync(`rsync -az --progress ${rshOpt} ${includes.join(' ')} "${target}:${remotePath}/" "${localPath}/"`, { stdio: 'inherit' });
+    execSync(`rsync -az --progress ${rshOpt} ${includes.join(' ')} ${shellEscape(target + ':' + remotePath + '/')} ${shellEscape(localPath + '/')}`, { stdio: 'inherit' });
   } else {
     // Build a file list for tar on the remote side
-    const tarList = tarIncludes.join(' ');
-    execSync(`ssh ${sshFlag} "${target}" "cd '${remotePath}' && tar -cf - ${tarList} 2>/dev/null" | tar -xf - -C "${localPath}"`, { stdio: 'inherit' });
+    const tarList = tarIncludes.map(shellEscape).join(' ');
+    execSync(`ssh ${sshFlag} ${shellEscape(target)} "cd ${shellEscape(remotePath)} && tar -cf - ${tarList} 2>/dev/null" | tar -xf - -C ${shellEscape(localPath)}`, { stdio: 'inherit' });
   }
 }
 
@@ -139,9 +153,9 @@ function sshPush(localPath: string, host: string, remotePath: string, opts: SSHO
   const sshFlag = sshArgs(opts);
   if (hasCommand('rsync')) {
     const rshOpt = sshFlag ? `-e "ssh ${sshFlag}"` : '';
-    execSync(`rsync -az ${rshOpt} "${localPath}/" "${target}:${remotePath}/"`, { stdio: 'pipe' });
+    execSync(`rsync -az ${rshOpt} ${shellEscape(localPath + '/')} ${shellEscape(target + ':' + remotePath + '/')}`, { stdio: 'pipe' });
   } else {
-    execSync(`tar -cf - -C "${localPath}" . | ssh ${sshFlag} "${target}" "tar -xf - -C '${remotePath}'"`, { stdio: 'pipe' });
+    execSync(`tar -cf - -C ${shellEscape(localPath)} . | ssh ${sshFlag} ${shellEscape(target)} "tar -xf - -C ${shellEscape(remotePath)}"`, { stdio: 'pipe' });
   }
 }
 
