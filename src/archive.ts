@@ -26,10 +26,18 @@ export async function createSoulArchive(opts: {
 
   const files: FileEntry[] = [];
   for (const relPath of filePaths) {
-    const fullPath = join(workspacePath, relPath);
+    // Handle external (absolute) paths
+    const isExternal = relPath.startsWith('__external__');
+    const fullPath = isExternal 
+      ? relPath.slice('__external__'.length) 
+      : join(workspacePath, relPath);
+    const archivePath = isExternal
+      ? 'external' + relPath.slice('__external__'.length)  // Store as external/absolute/path
+      : relPath;
+    
     const hash = await sha256File(fullPath);
     const s = await stat(fullPath);
-    files.push({ path: relPath, sha256: hash, size: s.size });
+    files.push({ path: archivePath, sha256: hash, size: s.size });
   }
 
   const manifest: SoulManifest = {
@@ -50,9 +58,16 @@ export async function createSoulArchive(opts: {
 
   // Add all soul files
   for (const relPath of filePaths) {
-    const fullPath = join(workspacePath, relPath);
+    const isExternal = relPath.startsWith('__external__');
+    const fullPath = isExternal 
+      ? relPath.slice('__external__'.length) 
+      : join(workspacePath, relPath);
+    const archivePath = isExternal
+      ? 'external' + relPath.slice('__external__'.length)
+      : relPath;
+    
     const data = await readFile(fullPath);
-    entries.push({ name: relPath, data });
+    entries.push({ name: archivePath, data });
   }
 
   const tarball = pack(entries);
